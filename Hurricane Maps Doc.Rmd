@@ -1,0 +1,213 @@
+---
+title: "Hurricane Maps"
+author: "Jenna Moscaritolo"
+date: "10/31/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("tidyverse","hurricaneexposuredata","drat","maps","tmap","sf","viridis","sp")
+```
+
+## 1. Data Cleaning
+
+```{r}
+# Extracting the general data for mapping
+addRepo("geanders")
+data("hurr_tracks")
+data("rain")
+```
+
+```{r}
+# Filtering target data
+floyd_track <- hurr_tracks %>% filter(storm_id == "Floyd-1999")
+allison_track <- hurr_tracks %>% filter(storm_id == "Allison-2001")
+```
+
+```{r, message = FALSE, warning = FALSE}
+# Making initial rain datasets 
+floyd_rain1 <- rain %>% 
+  filter(storm_id == "Floyd-1999") %>% 
+  group_by(fips, storm_id) %>% 
+  summarize(sum_precip = sum(precip))
+allison_rain1 <- rain %>%
+  filter(storm_id == "Allison-2001") %>%
+  group_by(fips, storm_id) %>%
+  summarize(sum_precip = sum(precip))
+```
+
+```{r}
+# Making adjustments on the fips
+countyfips <- county.fips
+countyfips$fips <- as.character(countyfips$fips)
+
+# Transforming fips with extra zeros as first digit
+countyfips$fips <- str_pad(countyfips$fips, 5, side = "left", pad = "0")
+```
+
+```{r}
+# Adjusting the data further
+floyd_rain2 <- merge(floyd_rain1, countyfips, by = "fips") %>% separate(polyname, into = c("region", "subregion"), sep =  ",")
+allison_rain2 <- merge(allison_rain1, countyfips, by = "fips") %>% separate(polyname, into = c("region", "subregion"), sep = ",")
+```
+
+```{r}
+# Organizing the states 
+states_int <- c("texas", "oklahoma", "kansas", "louisiana", "arkansas", "missouri", "iowa", "wisconsin", "michigan", "illinois", "indiana", "ohio", "kentucky", "tennessee", "alabama", "mississippi", "florida", "georgia", "south carolina", "north carolina", "virginia", "west virginia", "maryland", "delaware", "pennsylvania", "new jersey", "new york", "connecticut", "rhode island", "massachusetts", "vermont", "new hampshire", "maine")
+main_states <- map_data("county", states_int)
+```
+
+```{r}
+## Final datasets
+
+# Floyd-1999
+floyd_rain <- merge(main_states, floyd_rain2, by = c("region", "subregion"))
+floyd_rain[floyd_rain == 0.0] <- 0
+# Make cut
+floyd_rain$rain_cut <- cut(floyd_rain$sum_precip, breaks = c(0,25,50,75,100,125,150,175,200,225))
+
+# Allison-2001
+allison_rain <- merge(main_states, allison_rain2, by = c("region","subregion"))
+allison_rain[allison_rain == 0.0] <- 0
+# Make cut
+allison_rain$rain_cut <- ifelse(allison_rain$sum_precip > 175, "Exposed", "Unexposed")
+```
+
+
+## 2. ggplot Method
+
+### 2.1 Floyd-1999
+
+```{r}
+plot_floyd_rain <- ggplot() + 
+  geom_polygon(data = main_states, aes(x = long, y = lat, group = group), color = "black", fill = "white") + 
+  
+  geom_polygon(data = floyd_rain, aes(x = long, y = lat, group = group, fill = rain_cut), color = "transparent") +
+  
+  geom_path(data = floyd_track, aes(longitude, latitude), color = "red") +
+  
+  xlim(min(main_states$long), max(main_states$long)) +
+  
+  ylim(min(main_states$lat), max(main_states$lat))
+```
+
+```{r, message = FALSE, warning = FALSE}
+# Adding titles and color scheme
+plot_floyd_rain + 
+  labs(fill = "Rainfall(mm)") + 
+  scale_fill_brewer(palette = "Blues") +
+  ggtitle("Floyd-1999") + 
+  scale_fill_brewer(palette = "Blues") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+### 2.2 Allison-2001
+
+```{r}
+plot_allison_rain <- ggplot() + 
+  geom_polygon(data = main_states, aes(x = long, y = lat, group = group), color = "black", fill = "white") +  
+  
+  geom_polygon(data = allison_rain, aes(x = long, y = lat, group = group, fill = rain_cut), color = "transparent") +
+  
+  geom_path(data = allison_track, aes(longitude, latitude), color = "red") +
+  
+  xlim(min(main_states$long),max(main_states$long)) +
+  
+  ylim(min(main_states$lat),max(main_states$lat))
+```
+
+```{r, message = FALSE, warning = FALSE}
+# Adding titles and color scheme
+plot_allison_rain + 
+  labs(fill = "Rain > 175mm") +  
+  xlab("Longitude") + ylab("Latitude") +
+  ggtitle("Allison-2001") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## 3. tmap Method
+
+### 3.1 Floyd-1999
+
+#### 3.1.1 Organizing Data Further
+```{r}
+# Transferring the data into spatial version
+tMap <- st_as_sf(map("county", states_int, plot = FALSE, fill = TRUE))
+
+# Transferring floyd_rain into spatial format 
+tmap_floyd_rain1 <- floyd_rain %>% 
+  select(region, subregion, rain_cut) %>% 
+  mutate(ID = str_c(region, subregion, sep = ",")) %>% 
+  select(ID, rain_cut) %>% 
+  rename(`Rainfall(mm)` = rain_cut)
+tmap_floyd_rain <- left_join(tMap, tmap_floyd_rain1, by = "ID")
+
+# Transferring floyd_track into spatial format
+tmap_floyd_track <- cbind(floyd_track$longitude, floyd_track$latitude) %>%
+  Line() %>% Lines(ID = 'Floyd-1999') %>%
+  list() %>% SpatialLines()
+```
+
+
+#### 3.1.2 Making map
+
+```{r, message = FALSE, warning = FALSE}
+plot_tmap_floyd_rain <- 
+tm_shape(tmap_floyd_rain)+
+  tm_polygons(border.col = "white", lwd = 0.1, colorNA = NULL,
+              col = 'Rainfall(mm)', style = "cont",
+              title = "Rainfall(mm)",
+              palette = cividis(n = 7, direction = -1)) +
+  tm_shape(tmap_floyd_track) +
+  tm_lines(col = 'red')
+
+# Adding title
+plot_tmap_floyd_rain + 
+  tm_layout(main.title = 'Floyd-1999',
+            main.title.position = "center")
+```
+
+
+
+### 3.2 Allison-2001
+
+#### 3.2.1 Organizing Data Further
+```{r}
+# Transferring allison_rain into spatial format
+tmap_allison_rain1 <- allison_rain %>% 
+  select(region, subregion, rain_cut) %>% 
+  mutate(ID = str_c(region, subregion, sep = ",")) %>% 
+  select(ID, rain_cut) %>% 
+  rename(`Rainfall > 175mm` = rain_cut)
+tmap_allison_rain <- left_join(tMap, tmap_allison_rain1, by = "ID")
+
+# Transfer allison_track into spatial format
+tmap_allison_track <- cbind(allison_track$longitude, allison_track$latitude) %>%
+  Line() %>% Lines(ID = 'Floyd-1999') %>%
+  list() %>% SpatialLines()
+```
+
+#### 3.2.2 Making map
+
+
+```{r, message = FALSE, warning = FALSE}
+plot_tmap_allison_rain <- 
+tm_shape(tmap_allison_rain) +
+  tm_polygons(border.col = "white", lwd = 0.1, colorNA = NULL,
+              col = 'Rainfall > 175mm', style = "cont",
+              title = "Rainfall > 175mm",
+              palette = plasma(n = 2, direction = -1)) +
+  tm_shape(tmap_allison_track) +
+  tm_lines(col = 'red')
+
+# Adding title
+plot_tmap_allison_rain + 
+  tm_layout(main.title = 'Allison-2001',
+            main.title.position = "center")
+```
+
+
+
+
